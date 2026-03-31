@@ -1,0 +1,71 @@
+function W = util_hopfield_weights(T, E, map_idx)
+%% === Function to compute weights of the Hopfield dynamics === 
+% USE THIS ONLY FOR SIMULATIONS. It builds a matrix assuming to know the
+% electric field of the reference and the transmission matrix, which we
+% don't know in the real experiment.
+% W(j,k) = sum_{i in superpixel j} E(i) * T(i,k)
+% Inputs:
+%   T       : [Ncam x Nneur]  (real or complex)
+%   E       : [Ncam x 1] OR [cam_x x cam_y] from generate_complex_field (complex)
+%   map_idx : {Nneur x 1} cell of index vectors OR numeric [Nneur x n_spx]
+% Output:
+%   W       : [Nneur x Nneur] (complex if E or T are complex)
+
+    % ---- Normalize E to a column vector [Ncam x 1]
+    if isvector(E)
+        Evec = E(:);
+    else
+        Evec = E(:);  % column-major reshape from cam_x×cam_y
+    end
+    [Ncam_T, Nneur] = size(T);
+    if numel(Evec) ~= Ncam_T
+        error('Length(E) = %d does not match size(T,1) = %d.', numel(Evec), Ncam_T);
+    end
+
+    % ---- Normalize map_idx to a cell {Nneur x 1} with valid linear indices
+    if iscell(map_idx)
+        if numel(map_idx) ~= Nneur
+            error('map_idx cell must be {Nneur x 1}.');
+        end
+        MI = map_idx(:);
+    else
+        if ~(isnumeric(map_idx) && size(map_idx,1) == Nneur && ndims(map_idx)==2)
+            error('map_idx must be numeric [Nneur x n_spx] or cell {Nneur x 1}.');
+        end
+        Mnum = double(map_idx);
+        Mnum(~isfinite(Mnum)) = 0;            % allow NaN placeholders
+        MI = cell(Nneur,1);
+        for j = 1:Nneur
+            v = Mnum(j,:);
+            v = v(v >= 1 & v <= Ncam_T);      % keep valid linear indices
+            MI{j} = uint32(v(:));
+        end
+    end
+
+    % ---- Build sparse selection matrix Msel: [Ncam x Nneur], M(i,j)=1 if i in superpixel j
+    counts = cellfun(@numel, MI);
+    total  = sum(counts);
+    if total == 0
+        W = zeros(Nneur, Nneur, 'like', T);
+        return;
+    end
+    I = zeros(total,1,'uint32');
+    J = zeros(total,1,'uint32');
+    pos = 1;
+    for j = 1:Nneur
+        v = MI{j};
+        n = numel(v);
+        if n
+            I(pos:pos+n-1) = v;
+            J(pos:pos+n-1) = j;
+            pos = pos + n;
+        end
+    end
+    % Use ones of the appropriate class to keep numeric types sensible
+    Msel = sparse(double(I), double(J), ones(double(total),1), Ncam_T, Nneur);
+
+    % ---- Compute W = Msel' * (diag(E) * T) without forming diag(E)
+    % Element-wise multiply T rows by E (broadcast across columns)
+    X = T .* Evec;            % [Ncam x Nneur]
+    W = full(Msel' * X);      % [Nneur x Nneur]
+end
